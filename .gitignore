@@ -1,0 +1,9 @@
+/target
+# 個人の設定・作業データ (APIキーを含む)
+settings.ini
+state.json
+# ビルド済みexeはReleasesで配布
+*.exe
+# 旧版の残りファイル
+/dict.rs
+/dir_nsfw.rs

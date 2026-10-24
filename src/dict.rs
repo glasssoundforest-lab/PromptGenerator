@@ -304,3 +304,48 @@ pub fn lookup(ids: &[&str], text: &str) -> Option<&'static str> {
         .or_else(|| pri.iter().find_map(|c| fuzzy(c)))
         .or_else(|| all().iter().find_map(|c| fuzzy(&c)))
 }
+
+/// `lookup` で見つからない語を、辞書の日本語の連なりに分けて英語にする (例: カラー色彩 = color, colors)。
+/// 全体を辞書の語だけで過不足なく分けられるときだけ成功し、語数が最も少ない分け方を使う。
+pub fn lookup_compound(ids: &[&str], text: &str) -> Option<String> {
+    if let Some(en) = lookup(ids, text) {
+        return Some(en.to_string());
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() < 3 || chars.len() > 40 {
+        return None;
+    }
+    // 日本語を含まない語は対象にしない
+    if chars.iter().all(|c| c.is_ascii()) {
+        return None;
+    }
+    let pri: Vec<&Category> = ids.iter().filter_map(|id| category(id)).collect();
+    let pieces = |start: usize| -> Vec<(usize, &'static str)> {
+        let rest: String = chars[start..].iter().collect();
+        let mut out: Vec<(usize, &'static str)> = Vec::new();
+        for c in pri.iter().copied().chain(all().iter()) {
+            for (en, ja) in c.entries {
+                let n = ja.chars().count();
+                if n >= 2 && rest.starts_with(ja) && !out.iter().any(|(l, e)| *l == n && e == en) {
+                    out.push((n, en));
+                }
+            }
+        }
+        out
+    };
+    // best[i] = 先頭 i 文字を分ける最小の語数と、その英語の並び
+    let mut best: Vec<Option<(usize, Vec<&'static str>)>> = vec![None; chars.len() + 1];
+    best[0] = Some((0, Vec::new()));
+    for i in 0..chars.len() {
+        let Some((cnt, words)) = best[i].clone() else { continue };
+        for (n, en) in pieces(i) {
+            let j = i + n;
+            if best[j].as_ref().is_none_or(|(c, _)| cnt + 1 < *c) {
+                let mut w = words.clone();
+                w.push(en);
+                best[j] = Some((cnt + 1, w));
+            }
+        }
+    }
+    best[chars.len()].take().map(|(_, w)| w.join(", "))
+}

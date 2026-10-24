@@ -903,7 +903,7 @@ impl Field {
         let mut out: Vec<String> = self.state.tokens.iter().map(|t| t.en.clone()).collect();
         for w in split_free(&self.state.free) {
             let hit = if lookup {
-                dict::lookup(self.dicts, &w).map(String::from)
+                dict::lookup_compound(self.dicts, &w)
             } else {
                 None
             };
@@ -1452,6 +1452,14 @@ impl App {
         }
     }
 
+    /// 項目に属さない自由入力を分けて、辞書にある語は英語にする (API利用時は日本語のままAIに渡す)
+    fn translate_free(&self, text: &str) -> Vec<String> {
+        split_free(text)
+            .into_iter()
+            .map(|w| if self.api.enabled { w } else { dict::lookup_compound(&[], &w).unwrap_or(w) })
+            .collect()
+    }
+
     /// 入力内容から (本文, ネガティブ) を組み立てる。辞書の語は英語、辞書外の自由入力は入力のまま
     fn collect(&self) -> (String, String) {
         let mut parts: Vec<String> = Vec::new();
@@ -1464,13 +1472,13 @@ impl App {
         if let Some(a) = self.age {
             parts.push(AGE_TAGS[a].to_string());
         }
-        parts.extend(split_free(&self.appearance));
+        parts.extend(self.translate_free(&self.appearance));
         for s in &self.sections {
             for fl in &s.fields {
                 parts.extend(fl.prompt_terms(!self.api.enabled));
             }
         }
-        parts.extend(split_free(&self.other));
+        parts.extend(self.translate_free(&self.other));
         let (parts, moved) = self.split_negations(parts);
         (parts.join(", "), merge_unique(self.negatives.iter().cloned().chain(moved)).join(", "))
     }
@@ -3862,7 +3870,8 @@ impl App {
                 );
                 ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
                     if ui.button("追加").clicked() && !self.negative_input.trim().is_empty() {
-                        self.negatives.push(self.negative_input.trim().to_string());
+                        let words = self.translate_free(&self.negative_input);
+                        self.negatives = merge_unique(self.negatives.iter().cloned().chain(words));
                         self.negative_input.clear();
                     }
                     if ui.button("辞書").on_hover_text("ネガティブにした方がよい語を、種類ごとにまとめて選べます").clicked() {
@@ -5208,6 +5217,19 @@ Negative prompt: blurry", AGE_TAGS[1]), "{w}");
         // 古い保存データ (項目なし) では既定の語が入る
         a.load_json(&serde_json::json!({}));
         assert_eq!(find(&a, "品質"), ["perfect", "masterpiece"]);
+    }
+
+    #[test]
+    fn compound_and_free_text_words_become_english() {
+        assert_eq!(dict::lookup_compound(&[], "カラー色彩").as_deref(), Some("color, colors"));
+        assert_eq!(dict::lookup_compound(&[], "背景なし").as_deref(), Some("no background"));
+        assert_eq!(dict::lookup_compound(&[], "zzzz存在しない語"), None);
+        let mut a = App::blank();
+        a.api.enabled = false;
+        a.other = "カラー色彩 背景なし".into();
+        let (pos, neg) = a.collect();
+        assert!(pos.contains("color, colors"), "{pos}");
+        assert!(neg.contains("background"), "{neg}");
     }
 
     #[test]

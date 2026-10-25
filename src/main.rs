@@ -1501,6 +1501,21 @@ impl App {
         (keep, moved)
     }
 
+    /// クリップボードへ渡す文。先頭に、選んでいるモデル向けの依頼文を付ける (内容が空なら空)
+    fn copy_text(&self) -> String {
+        let body = self.context_text();
+        if body.is_empty() {
+            return body;
+        }
+        format!(
+            "貴方は、プロンプトエンジニアです。
+以下の内容を英語の「{}」用のプロンプトにしてください
+
+{body}",
+            FORMATS[self.model].name
+        )
+    }
+
     /// コピー形式に合わせて、選択・入力した内容をテキストにする
     fn context_text(&self) -> String {
         match self.copy_mode {
@@ -3600,7 +3615,7 @@ impl App {
                     self.saved.push(self.snapshot(name));
                 }
                 if ui.add(egui::Button::new("選択内容をコピー").min_size(egui::vec2(w, 40.0))).on_hover_text("選択・入力した内容を、上の「コピー形式」でクリップボードへコピーします").clicked() {
-                    let text = self.context_text();
+                    let text = self.copy_text();
                     if text.is_empty() {
                         self.api_status = "コピーできる選択内容がありません".into();
                     } else {
@@ -5251,6 +5266,25 @@ Negative prompt: blurry", AGE_TAGS[1]), "{w}");
                 }
             }
         }
+    }
+
+    #[test]
+    fn copy_text_starts_with_request_for_the_selected_model() {
+        let mut a = App::blank();
+        a.gender = Some(1);
+        for model in ["Midjourney", "Pony", "DALL·E"] {
+            a.model = FORMATS.iter().position(|f| f.name == model).unwrap();
+            for mode in 0..COPY_MODES.len() {
+                a.copy_mode = mode;
+                let t = a.copy_text();
+                let head = format!("貴方は、プロンプトエンジニアです。
+以下の内容を英語の「{model}」用のプロンプトにしてください
+
+");
+                assert!(t.starts_with(&head) && t.len() > head.len(), "{t}");
+            }
+        }
+        assert_eq!(App { gender: None, ..App::blank() }.copy_text(), "");
     }
 
     #[test]

@@ -1522,13 +1522,13 @@ impl App {
     /// 英語の単語だけを、分類なしでカンマ区切りに並べる。ネガティブは意味が逆なので、別の行 (Negative prompt: ...) にする
     fn words_text(&self) -> String {
         let mut words: Vec<String> = self.basic_tags().into_iter().flatten().collect();
-        words.extend(split_free(&self.appearance));
+        words.extend(self.translate_free(&self.appearance));
         for si in LAYOUT.into_iter().flatten() {
             for fl in &self.sections[si].fields {
                 words.extend(fl.prompt_terms(true));
             }
         }
-        words.extend(split_free(&self.other));
+        words.extend(self.translate_free(&self.other));
         let (words, moved) = self.split_negations(words);
         let positive = merge_unique(words).join(", ");
         let negatives = merge_unique(self.negatives.iter().cloned().chain(moved));
@@ -1552,7 +1552,7 @@ Negative prompt: {}", negatives.join(", ")),
                     basic.extend(gender.map(|t| format!("Gender: {t}")));
                     basic.extend(age.map(|t| format!("Age: {t}")));
                     if !self.appearance.trim().is_empty() {
-                        basic.push(format!("Appearance: {}", split_free(&self.appearance).join(", ")));
+                        basic.push(format!("Appearance: {}", self.translate_free(&self.appearance).join(", ")));
                     }
                     blocks.push(("Character", basic));
                 }
@@ -1570,7 +1570,7 @@ Negative prompt: {}", negatives.join(", ")),
                 }
             }
         }
-        let other = split_free(&self.other);
+        let other = self.translate_free(&self.other);
         if !other.is_empty() {
             blocks.push(("Other", vec![other.join(", ")]));
         }
@@ -5230,6 +5230,27 @@ Negative prompt: blurry", AGE_TAGS[1]), "{w}");
         let (pos, neg) = a.collect();
         assert!(pos.contains("color, colors"), "{pos}");
         assert!(neg.contains("background"), "{neg}");
+    }
+
+    #[test]
+    fn no_background_never_stays_japanese() {
+        for model in ["Midjourney", "Pony", "DALL·E"] {
+            for copy_mode in 0..COPY_MODES.len() {
+                let mut a = App::blank();
+                a.api.enabled = false;
+                a.model = FORMATS.iter().position(|f| f.name == model).unwrap();
+                a.copy_mode = copy_mode;
+                let fl = a.sections.iter_mut().flat_map(|s| s.fields.iter_mut()).find(|f| f.label == "シチュエーション").unwrap();
+                fl.state.free = "背景なし".into();
+                let (pos, neg) = a.collect();
+                a.finish(pos.clone(), neg.clone());
+                a.other = "背景なし".into();
+                a.appearance = "背景なし".into();
+                for text in [&pos, &neg, &a.output, &a.output_neg, &a.words_text(), &a.context_text_en()] {
+                    assert!(!text.contains("背景"), "{model}/{copy_mode}: {text}");
+                }
+            }
+        }
     }
 
     #[test]

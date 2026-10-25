@@ -966,6 +966,7 @@ fn en_label(ja: &str) -> &str {
         "制服・ドレス・水着" => "Uniform, dress & swimwear",
         "トップス・ボトムス" => "Tops & bottoms",
         "靴下" => "Socks",
+        "ネイル" => "Nails",
         "下着・ランジェリー" => "Underwear & lingerie",
         "部屋着・寝間着" => "Loungewear & sleepwear",
         "手袋・腕まわり" => "Gloves & arm wear",
@@ -1036,11 +1037,12 @@ fn build_all_sections() -> Vec<Section> {
         Section {
             title: "身体",
             sub: "体全体の形状や部位のサイズ・状態を指定できます。",
-            groups: &[("全体", 1), ("胴", 1), ("手足", 1), ("成人向け", 1)],
+            groups: &[("全体", 1), ("胴", 1), ("手足", 2), ("成人向け", 1)],
             fields: vec![
                 f("身長・体型・首", "例：背の高い女性、長い首、脚の長い、短い首 など", &["tall girl"]).dict(&["body_head", "body_height", "body_figure", "neck", "body_neck_anatomy", "body_nape", "hair_neck_interaction"]),
                 f("胸・ウエスト・ヒップ", "例：大きな胸、細いウエスト、幅広のヒップ、豊満なバスト など", &["large breasts"]).dict(&["torso", "body_bust", "body_waist", "body_midriff_state", "body_abs", "body_navel", "body_hips", "body_hips_volume", "body_hips_curve", "body_hips_structure"]),
-                f("手・腕・脚・足", "例：細長い指、太い太もも、足の裏、詳細な爪 など", &["slender fingers"]).dict(&["limbs", "body_hand_anatomy", "body_limbs", "body_leg_thighs", "body_leg_lower", "body_foot_anatomy"]),
+                f("手・腕・脚・足", "例：細長い指、太い太もも、足の裏、細い手首 など", &["slender fingers"]).dict(&["limbs", "body_hand_anatomy", "body_limbs", "body_leg_thighs", "body_leg_lower", "body_foot_anatomy"]),
+                f("ネイル", "例：フレンチネイル、赤いネイル、ロングネイル、ラメネイル など", &["french manicure"]).dict(&["nails"]),
                 f("身体・部位(成人向け)", "辞書ボタンから選べます (成人向けの語を含みます)", &["nipples"]).dict(&["body_adult", "body_adult_detail", "body_fetish_feet", "body_fetish_focus", "body_armpit_state", "body_armpit_detail"]),
             ],
         },

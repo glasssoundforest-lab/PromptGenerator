@@ -899,6 +899,11 @@ impl Field {
 
     /// プロンプトに使う語。ボタン入力は英語、自由入力は区切って使う。
     /// `lookup` が真なら、辞書に一致する自由入力を英語に置換する (API英語化を使うときは不要)
+    /// 選んだ語・入力した語を、日本語のまま (英語にしない) 返す
+    fn terms_ja(&self) -> Vec<String> {
+        self.state.tokens.iter().map(|t| t.ja.clone()).chain(split_free(&self.state.free)).collect()
+    }
+
     fn prompt_terms(&self, lookup: bool) -> Vec<String> {
         let mut out: Vec<String> = self.state.tokens.iter().map(|t| t.en.clone()).collect();
         for w in split_free(&self.state.free) {
@@ -1108,8 +1113,11 @@ fn build_all_sections() -> Vec<Section> {
     ]
 }
 
+/// コピーの先頭に付ける指示文の種類 (App::instruction の番号)
+const INSTRUCTIONS: [&str; 3] = ["標準 (プロンプトにして)", "自然文にして", "省略"];
+
 /// コピー形式の名前 (App::copy_mode の番号)
-const COPY_MODES: [&str; 3] = ["分類つき (日本語の見出し)", "分類つき (全て英語)", "英単語のみ (分類なし)"];
+const COPY_MODES: [&str; 5] = ["分類つき (日本語の見出し)", "分類つき (全て英語)", "英単語のみ (分類なし)", "分類つき (全て日本語)", "日本語のみ (分類なし)"];
 
 const GENDERS: [&str; 3] = ["男性", "女性", "その他"];
 const AGES: [&str; 5] = ["10代", "20代", "30代", "40代", "50代以上"];
@@ -1132,13 +1140,24 @@ fn count_tag(count: usize, gender: Option<usize>) -> String {
         _ => "",
     };
     match (count, who) {
-        (0, _) => "solo".into(),
+        (0, "") => "solo".into(),
+        (0, w) => format!("1{w}"),
         (1 | 2, "") => format!("{}people", count + 1),
         (1 | 2, w) => format!("{}{w}s", count + 1),
         (_, "") => "multiple people".into(),
         (_, w) => format!("multiple {w}s"),
     }
 }
+/// 性別の英語タグ。男性・女性は「female」とは書かず 1girl / 1boy にする。人数があれば人数のタグ (1girl・2girls など) が性別を表すので出さない
+fn gender_tag(count: Option<usize>, gender: usize) -> Option<String> {
+    match gender {
+        0 | 1 if count.is_some() => None,
+        0 => Some("1boy".into()),
+        1 => Some("1girl".into()),
+        g => Some(GENDER_TAGS[g].to_string()),
+    }
+}
+
 /// 出力形式。タグ系ローカルモデルは、公式カード/ガイドの推奨プレフィックス・ネガティブを既定にしている
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -1164,7 +1183,7 @@ const TAG_HINT: &str = "Write Danbooru-style tags: lowercase, comma-separated, s
 Start with a subject-count tag such as 1girl or 1boy when the gender is known. Use tags, not sentences. \
 Do not output quality, score, rating, year, or artist tags; they are added separately.";
 
-const FORMATS: [Format; 7] = [
+const FORMATS: [Format; 8] = [
     Format {
         name: "Midjourney",
         kind: Kind::Midjourney,
@@ -1176,7 +1195,7 @@ const FORMATS: [Format; 7] = [
         name: "Stable Diffusion",
         kind: Kind::Webui,
         prefix: "",
-        neg: "",
+        neg: "worst quality, low quality, bad anatomy, bad hands, extra fingers, blurry, text, watermark",
         hint: "Write comma-separated English keywords suitable for Stable Diffusion.",
     },
     Format {
@@ -1203,7 +1222,7 @@ const FORMATS: [Format; 7] = [
     Format {
         name: "Anima",
         kind: Kind::Webui,
-        prefix: "masterpiece, best quality, score_7, safe",
+        prefix: "masterpiece, best quality, score_7, newest, safe",
         neg: "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration",
         hint: "Write lowercase Danbooru-style tags with spaces instead of underscores, optionally followed by one or two short natural-language sentences describing the scene. \
 Start with a subject-count tag such as 1girl or 1boy when the gender is known. Do not output quality, score, rating, or artist tags; they are added separately.",
@@ -1214,6 +1233,13 @@ Start with a subject-count tag such as 1girl or 1boy when the gender is known. D
         prefix: "score_9, score_8_up, score_7_up, score_6_up, source_anime",
         neg: "score_6, score_5, score_4, text, watermark, signature",
         hint: TAG_HINT,
+    },
+    Format {
+        name: "自然文",
+        kind: Kind::Sentence,
+        prefix: "",
+        neg: "",
+        hint: "Write natural English sentences (not tags or keywords) that describe the image.",
     },
 ];
 
@@ -1274,6 +1300,10 @@ struct App {
     // output
     model: usize,
     quality_tags: bool,
+    /// ネガティブの既定 (モデル標準) を入れるときの、直前のモデル番号
+    last_model: usize,
+    /// 保存データにネガティブの既定が反映済みか (古い保存データでは起動時に一度だけ入れる)
+    neg_defaults_saved: bool,
     output: String,
     output_neg: String,
     /// 出力欄の下に出す補足 (推奨サイズ・シード等。プロンプト本文には含めない)
@@ -1300,6 +1330,8 @@ struct App {
     simple_mode: bool,
     /// コピー形式: 0 = 日本語の見出し, 1 = 見出しも全て英語, 2 = 英単語のみ (分類なし)
     copy_mode: usize,
+    /// コピーするとき先頭に付ける依頼文 (プロンプトエンジニアへの指示) の種類 (INSTRUCTIONS の番号)
+    instruction: usize,
     /// スクロール量 [左ペイン, 右ペイン]。settings.ini に保存する
     scroll: [f32; 2],
     /// 起動直後に1度だけ、保存したスクロール量を戻す
@@ -1342,6 +1374,8 @@ struct App {
     /// お気に入り登録ダイアログ: 入力中の名前 (Some の間だけ表示)
     fav_dialog: Option<String>,
     fav_dialog_fresh: bool,
+    /// 「設定を保存」の名前入力ダイアログ (入力中の名前)
+    save_dialog: Option<String>,
     show_favs: bool,
     /// 一覧を開いた直後のクリックで閉じないための判定用
     fav_shown: bool,
@@ -1365,7 +1399,22 @@ impl App {
         app.reload_favorites();
         app.load_settings();
         app.api.load_locked_keys(&ini_path());
+        app.last_model = app.model;
+        if !app.neg_defaults_saved {
+            app.negatives = merge_unique(app.negatives.iter().cloned().chain(preset_negatives(app.model)));
+        }
         app
+    }
+
+    /// モデルを切り替えたら、前のモデルの標準ネガティブを外し、新しいモデルの標準ネガティブを選択する
+    fn apply_model_negatives(&mut self) {
+        if self.model == self.last_model {
+            return;
+        }
+        let old = preset_negatives(self.last_model);
+        self.negatives.retain(|n| !old.iter().any(|o| o.eq_ignore_ascii_case(n)));
+        self.negatives = merge_unique(self.negatives.iter().cloned().chain(preset_negatives(self.model)));
+        self.last_model = self.model;
     }
 
     fn blank() -> Self {
@@ -1379,6 +1428,8 @@ impl App {
             sections: build_sections(),
             model: 0,
             quality_tags: true,
+            last_model: 0,
+            neg_defaults_saved: false,
             output: String::new(),
             output_neg: String::new(),
             output_note: String::new(),
@@ -1398,6 +1449,7 @@ impl App {
             folded: [false; LAYOUT.len()],
             simple_mode: false,
             copy_mode: 0,
+            instruction: 0,
             scroll: [0.0; 2],
             scroll_restore: [true; 2],
             api: ApiSettings::default(),
@@ -1429,6 +1481,7 @@ impl App {
             favorites: Vec::new(),
             fav_dialog: None,
             fav_dialog_fresh: false,
+            save_dialog: None,
             show_favs: false,
             fav_shown: false,
             fav_filter: String::new(),
@@ -1476,8 +1529,8 @@ impl App {
         if let Some(c) = self.count {
             parts.push(count_tag(c, self.gender));
         }
-        if let Some(g) = self.gender {
-            parts.push(GENDER_TAGS[g].to_string());
+        if let Some(t) = self.gender.and_then(|g| gender_tag(self.count, g)) {
+            parts.push(t);
         }
         if let Some(a) = self.age {
             parts.push(AGE_TAGS[a].to_string());
@@ -1514,15 +1567,21 @@ impl App {
     /// クリップボードへ渡す文。先頭に、選んでいるモデル向けの依頼文を付ける (内容が空なら空)
     fn copy_text(&self) -> String {
         let body = self.context_text();
-        if body.is_empty() {
+        if body.is_empty() || self.instruction == 2 {
             return body;
         }
+        // 自然文は特定のモデル向けではないので、モデル名は付けない
+        let target = if self.instruction == 1 || FORMATS[self.model].name == "自然文" {
+            "英語の自然な文章 (自然文)のプロンプト".to_string()
+        } else {
+            format!("英語の「{}」用のプロンプト", FORMATS[self.model].name)
+        };
         format!(
             "貴方は、プロンプトエンジニアです。
-以下の内容を英語の「{}」用のプロンプトにしてください
+以下の内容を{target}にしてください
+プロンプトは70トークン前後でチャンク(区切り)してください
 
-{body}",
-            FORMATS[self.model].name
+{body}"
         )
     }
 
@@ -1531,7 +1590,29 @@ impl App {
         match self.copy_mode {
             1 => self.context_text_en(),
             2 => self.words_text(),
-            _ => self.context_text_ja(),
+            3 => self.context_text_ja(true),
+            4 => self.words_text_ja(),
+            _ => self.context_text_ja(false),
+        }
+    }
+
+    /// コピーするときの大分類の並び。タグ系のモデルは「品質 → 人数 → キャラ・顔・体・服 → ポーズ → 表情 → 背景 → 画風」、
+    /// それ以外 (Midjourney・自然文) は画面の並び
+    fn layout(&self) -> [Option<usize>; 8] {
+        if FORMATS[self.model].kind == Kind::Webui {
+            [None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)]
+        } else {
+            LAYOUT
+        }
+    }
+
+    /// モデルで必ず入れる語 (品質タグ等)。選ばれていなくても、コピーには入れる。「品質タグを付ける」を外していれば無し
+    fn required_terms(&self) -> Vec<String> {
+        let f = &FORMATS[self.model];
+        if self.quality_tags && f.kind == Kind::Webui {
+            f.prefix.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
+        } else {
+            Vec::new()
         }
     }
 
@@ -1539,7 +1620,7 @@ impl App {
     fn basic_tags(&self) -> [Option<String>; 3] {
         [
             self.count.map(|c| count_tag(c, self.gender)),
-            self.gender.map(|g| GENDER_TAGS[g].to_string()),
+            self.gender.and_then(|g| gender_tag(self.count, g)),
             self.age.map(|a| AGE_TAGS[a].to_string()),
         ]
     }
@@ -1548,14 +1629,17 @@ impl App {
     fn words_text(&self) -> String {
         let mut words: Vec<String> = self.basic_tags().into_iter().flatten().collect();
         words.extend(self.translate_free(&self.appearance));
-        for si in LAYOUT.into_iter().flatten() {
+        for si in self.layout().into_iter().flatten() {
             for fl in &self.sections[si].fields {
                 words.extend(fl.prompt_terms(true));
             }
         }
         words.extend(self.translate_free(&self.other));
         let (words, moved) = self.split_negations(words);
-        let positive = merge_unique(words).join(", ");
+        let mut positive = merge_unique(words).join(", ");
+        if FORMATS[self.model].kind == Kind::Webui {
+            positive = compose_positive(&self.required_terms().join(", "), &positive);
+        }
         let negatives = merge_unique(self.negatives.iter().cloned().chain(moved));
         match (positive.is_empty(), negatives.is_empty()) {
             (_, true) => positive,
@@ -1565,10 +1649,44 @@ Negative prompt: {}", negatives.join(", ")),
         }
     }
 
+    /// 日本語の語だけを、分類なしでカンマ区切りに並べる。ネガティブは別の行 (ネガティブ: ...)
+    fn words_text_ja(&self) -> String {
+        let mut words: Vec<String> = self.required_terms().iter().map(|t| ja_of_quality(t)).collect();
+        words.extend(self.count.map(|c| COUNTS[c].to_string()));
+        words.extend(self.gender.map(|g| GENDERS[g].to_string()));
+        words.extend(self.age.map(|a| AGES[a].to_string()));
+        words.extend(split_free(&self.appearance));
+        for si in self.layout().into_iter().flatten() {
+            for fl in &self.sections[si].fields {
+                words.extend(fl.terms_ja());
+            }
+        }
+        words.extend(split_free(&self.other));
+        let positive = merge_unique(words).join(", ");
+        let negatives: Vec<String> = self
+            .negatives
+            .iter()
+            .map(|n| match dict::category("negative_prompt").and_then(|c| c.entries.iter().find(|(en, _)| en.eq_ignore_ascii_case(n))) {
+                Some((_, ja)) => ja.to_string(),
+                None => n.clone(),
+            })
+            .collect();
+        match (positive.is_empty(), negatives.is_empty()) {
+            (_, true) => positive,
+            (true, false) => format!("ネガティブ: {}", negatives.join(", ")),
+            (false, false) => format!("{positive}
+ネガティブ: {}", negatives.join(", ")),
+        }
+    }
+
     /// 見出しも項目名もすべて英語にした、項目ごとのテキスト (英語のAIへの相談・共有用)
     fn context_text_en(&self) -> String {
         let mut blocks: Vec<(&str, Vec<String>)> = Vec::new();
-        for item in LAYOUT {
+        let required = self.required_terms();
+        if !required.is_empty() {
+            blocks.push(("Required tags", vec![required.join(", ")]));
+        }
+        for item in self.layout() {
             match item {
                 None => {
                     let [count, gender, age] = self.basic_tags();
@@ -1622,21 +1740,20 @@ Negative prompt: {}", negatives.join(", ")),
     }
 
     /// 選択・入力した内容を、項目ごとに整理したテキストにする (AIへの相談・共有用)
-    fn context_text_ja(&self) -> String {
+    /// all_ja が true なら、語も英語を添えずに日本語のまま並べる
+    fn context_text_ja(&self, all_ja: bool) -> String {
         let mut lines: Vec<String> = Vec::new();
         let mut basic = Vec::new();
+        let tagged = |ja: &str, tag: String| if all_ja { ja.to_string() } else { format!("{ja} ({tag})") };
         if let Some(c) = self.count {
-            basic.push(format!(
-                "人数: {} ({})",
-                COUNTS[c],
-                count_tag(c, self.gender)
-            ));
+            basic.push(format!("人数: {}", tagged(COUNTS[c], count_tag(c, self.gender))));
         }
         if let Some(g) = self.gender {
-            basic.push(format!("性別: {} ({})", GENDERS[g], GENDER_TAGS[g]));
+            let tag = gender_tag(self.count, g).unwrap_or_else(|| count_tag(self.count.unwrap_or(0), self.gender));
+            basic.push(format!("性別: {}", tagged(GENDERS[g], tag)));
         }
         if let Some(a) = self.age {
-            basic.push(format!("年齢: {} ({})", AGES[a], AGE_TAGS[a]));
+            basic.push(format!("年齢: {}", tagged(AGES[a], AGE_TAGS[a].to_string())));
         }
         if !self.appearance.trim().is_empty() {
             basic.push(format!(
@@ -1645,7 +1762,12 @@ Negative prompt: {}", negatives.join(", ")),
             ));
         }
         let mut blocks: Vec<(&str, Vec<String>)> = Vec::new();
-        for item in LAYOUT {
+        let required = self.required_terms();
+        if !required.is_empty() {
+            let shown: Vec<String> = required.iter().map(|t| if all_ja { ja_of_quality(t) } else { t.clone() }).collect();
+            blocks.push(("必須タグ", vec![shown.join(", ")]));
+        }
+        for item in self.layout() {
             match item {
                 None => blocks.push(("キャラクター設定", basic.clone())),
                 Some(si) => {
@@ -1654,8 +1776,7 @@ Negative prompt: {}", negatives.join(", ")),
                         .fields
                         .iter()
                         .filter_map(|fl| {
-                            let t: Vec<String> = fl
-                                .prompt_terms(false)
+                            let t: Vec<String> = (if all_ja { fl.terms_ja() } else { fl.prompt_terms(false) })
                                 .into_iter()
                                 .filter(|s| !s.trim().is_empty())
                                 .collect();
@@ -1677,7 +1798,15 @@ Negative prompt: {}", negatives.join(", ")),
         }
         if !self.negatives.is_empty() {
             lines.push("## ネガティブ".into());
-            lines.push(format!("- {}", self.negatives.join(", ")));
+            let neg: Vec<String> = self
+                .negatives
+                .iter()
+                .map(|n| match dict::category("negative_prompt").and_then(|c| c.entries.iter().find(|(en, _)| en.eq_ignore_ascii_case(n))) {
+                    Some((_, ja)) if all_ja => ja.to_string(),
+                    _ => n.clone(),
+                })
+                .collect();
+            lines.push(format!("- {}", neg.join(", ")));
             lines.push(String::new());
         }
         if lines.is_empty() {
@@ -1864,7 +1993,9 @@ Negative prompt: {}", negatives.join(", ")),
                 (false, false) => format!("{prefix}, {body}"),
             }
         };
-        let neg = compose_negative(if self.quality_tags { f.neg } else { "" }, &neg);
+        // モデル標準のネガティブは、選択中のもの (外していないもの) だけ付ける。AIが落とした場合も補う
+        let kept: Vec<String> = preset_negatives(self.model).into_iter().filter(|p| self.quality_tags && self.negatives.iter().any(|n| n.eq_ignore_ascii_case(p))).collect();
+        let neg = compose_negative(&kept.join(", "), &neg);
         self.output_note.clear();
         match f.kind {
             Kind::Midjourney => {
@@ -2307,6 +2438,7 @@ impl App {
         serde_json::json!({
             "version": 1,
             "default_tokens": 1,
+            "default_negatives": 1,
             "gender": self.gender, "age": self.age, "count": self.count, "appearance": self.appearance, "other": self.other, "fields": fields,
             "negatives": self.negatives, "negative_input": self.negative_input, "adjust": self.adjust,
             "output": self.output, "output_neg": self.output_neg, "output_note": self.output_note,
@@ -2334,6 +2466,7 @@ impl App {
                 }
             }
         }
+        self.neg_defaults_saved = !v["default_negatives"].is_null();
         self.negatives = v["negatives"]
             .as_array()
             .map(|a| {
@@ -2451,6 +2584,7 @@ impl App {
         put("ui.scroll_right", self.scroll[1].round().to_string());
         put("ui.folded", self.folded.iter().map(|b| if *b { '1' } else { '0' }).collect());
         put("ui.copy_mode", self.copy_mode.to_string());
+        put("ui.instruction", self.instruction.to_string());
         put("ui.mode", if self.simple_mode { "simple" } else { "detail" }.to_string());
         put("options.model", FORMATS[self.model].name.to_string());
         put("options.quality_tags", self.quality_tags.to_string());
@@ -2506,6 +2640,13 @@ impl App {
         }
         if let Some(v) = num("ui.copy_mode") {
             self.copy_mode = (v as usize).min(COPY_MODES.len() - 1);
+        }
+        // 旧設定 (指示文を省略するチェック) は「省略」に引き継ぐ
+        if get("ui.omit_instruction") == Some("1") {
+            self.instruction = 2;
+        }
+        if let Some(v) = num("ui.instruction") {
+            self.instruction = (v as usize).min(INSTRUCTIONS.len() - 1);
         }
         if let Some(v) = get("ui.mode") {
             self.simple_mode = v == "simple";
@@ -2896,15 +3037,32 @@ fn is_quality_tag(t: &str) -> bool {
     is_score_tag(&t) || t.starts_with("source_") || t.starts_with("rating_")
 }
 
+/// 品質タグの日本語 (辞書の「品質」にあれば日本語、なければそのまま)
+fn ja_of_quality(t: &str) -> String {
+    dict::category("style_quality")
+        .and_then(|c| c.entries.iter().find(|(en, _)| en.eq_ignore_ascii_case(t)))
+        .map_or_else(|| t.to_string(), |(_, ja)| ja.to_string())
+}
+
+/// 辞書の「品質」にある語 (masterpiece, best quality など)。タグ形式では先頭の品質タグの並びに寄せる
+fn is_quality_word(t: &str) -> bool {
+    dict::category("style_quality").is_some_and(|c| c.entries.iter().any(|(en, _)| en.eq_ignore_ascii_case(t.trim())))
+}
+
 /// タグ形式のポジティブを合成する。モデル標準の品質タグを先頭に、本文中の score_*/source_* もその直後に寄せ、
 /// それ以外の語の `_` は空白にする。重複は除く
 fn compose_positive(prefix: &str, body: &str) -> String {
     let split = |s: &str| -> Vec<String> {
         s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
     };
-    let (quality, rest): (Vec<_>, Vec<_>) = split(body).into_iter().partition(|t| is_quality_tag(t));
+    let (quality, rest): (Vec<_>, Vec<_>) = split(body).into_iter().partition(|t| is_quality_tag(t) || is_quality_word(t));
     let rest = rest.into_iter().map(|t| t.replace('_', " "));
     merge_unique(split(prefix).into_iter().chain(quality).chain(rest)).join(", ")
+}
+
+/// モデルの標準ネガティブ (FORMATS の neg) を語に分けたもの
+fn preset_negatives(model: usize) -> Vec<String> {
+    FORMATS[model].neg.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
 /// モデル標準のネガティブとユーザーのネガティブを合成する。
@@ -2959,6 +3117,7 @@ impl eframe::App for App {
         self.poll_api(&ctx);
         self.poll_models(&ctx);
         self.track_window(&ctx);
+        self.apply_model_negatives();
         self.autosave(&ctx);
 
         egui::Panel::top("header").show(ui, |ui| {
@@ -3064,6 +3223,7 @@ impl eframe::App for App {
         self.dict_window(&ctx);
         self.dicts_window(&ctx);
         self.fav_dialog_window(&ctx);
+        self.save_dialog_window(&ctx);
         self.favorites_window(&ctx);
 
         let mut show = self.show_api;
@@ -3232,6 +3392,46 @@ impl App {
             };
         } else if keep {
             self.fav_dialog = Some(name);
+        }
+    }
+
+    /// 「設定を保存」ダイアログ。名前を付けて保存する (空欄なら「設定 N」)
+    fn save_dialog_window(&mut self, ctx: &egui::Context) {
+        let Some(mut name) = self.save_dialog.take() else {
+            return;
+        };
+        let mut keep = true;
+        let mut save = false;
+        egui::Window::new("設定を保存")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("名前を付けて保存します (空欄なら自動で付けます)");
+                let te = ui.add(egui::TextEdit::singleline(&mut name).desired_width(360.0).hint_text(format!("設定 {}", self.saved.len() + 1)));
+                if !te.has_focus() && !te.lost_focus() {
+                    te.request_focus();
+                }
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new("保存").fill(ACCENT)).clicked() || (te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                        save = true;
+                    }
+                    if ui.button("キャンセル").clicked() {
+                        keep = false;
+                    }
+                });
+            });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            keep = false;
+        }
+        if save {
+            let name = match name.trim() {
+                "" => format!("設定 {}", self.saved.len() + 1),
+                n => n.to_string(),
+            };
+            self.saved.push(self.snapshot(name));
+        } else if keep {
+            self.save_dialog = Some(name);
         }
     }
 
@@ -3609,7 +3809,13 @@ impl App {
                         ui.selectable_value(&mut self.copy_mode, i, *name);
                     }
                 });
-                ui.label(RichText::new(["見出し・項目名は日本語、語は英語", "見出し・項目名・語をすべて英語", "英語の語だけをカンマ区切り (ネガティブは別の行)"][self.copy_mode]).small().color(SUB));
+                ui.label(RichText::new(["見出し・項目名は日本語、語は英語", "見出し・項目名・語をすべて英語", "英語の語だけをカンマ区切り (ネガティブは別の行)", "見出し・項目名・語をすべて日本語 (英語に直さない)", "日本語の語だけをカンマ区切り (ネガティブは別の行)"][self.copy_mode]).small().color(SUB));
+                ui.label("指示文");
+                egui::ComboBox::from_id_salt("instruction").selected_text(INSTRUCTIONS[self.instruction]).show_ui(ui, |ui| {
+                    for (i, name) in INSTRUCTIONS.iter().enumerate() {
+                        ui.selectable_value(&mut self.instruction, i, *name);
+                    }
+                });
             });
             ui.add_space(2.0);
             ui.horizontal(|ui| {
@@ -3621,8 +3827,7 @@ impl App {
                     self.randomize_all();
                 }
                 if ui.add(egui::Button::new("💾 設定を保存").min_size(egui::vec2(w, 40.0))).clicked() {
-                    let name = format!("設定 {}", self.saved.len() + 1);
-                    self.saved.push(self.snapshot(name));
+                    self.save_dialog = Some(String::new());
                 }
                 if ui.add(egui::Button::new("選択内容をコピー").min_size(egui::vec2(w, 40.0))).on_hover_text("選択・入力した内容を、上の「コピー形式」でクリップボードへコピーします").clicked() {
                     let text = self.copy_text();
@@ -4294,7 +4499,7 @@ mod tests {
     fn output_formats() {
         let mut app = App::blank();
         app.model = FORMATS.iter().position(|f| f.name == "Pony").unwrap();
-        app.finish("1girl, looking_at_viewer".into(), "bad hands".into());
+        app.finish("1girl, looking_at_viewer".into(), "score_6, score_5, score_4, text, watermark, signature, bad hands".into());
         assert_eq!(
             app.output,
             "score_9, score_8_up, score_7_up, score_6_up, source_anime, 1girl, looking at viewer"
@@ -4310,6 +4515,7 @@ mod tests {
             .iter()
             .position(|f| f.name == "Illustrious")
             .unwrap();
+        app.negatives = preset_negatives(app.model);
         app.finish("1girl".into(), String::new());
         assert_eq!(
             app.output_neg,
@@ -4596,7 +4802,8 @@ mod tests {
             .position(|f| f.name == "Illustrious")
             .unwrap();
         app.sections[0].fields[0].state.free = "ぱっつん前髪".into();
-        app.negatives = vec!["ぼやけた".into()];
+        app.negatives = preset_negatives(app.model);
+        app.negatives.push("ぼやけた".into());
         let ctx = egui::Context::default();
         app.generate(&ctx);
         for _ in 0..200 {
@@ -5078,7 +5285,7 @@ mod tests {
     }
     #[test]
     fn count_gender_age_tags_and_layout() {
-        assert_eq!(count_tag(0, Some(1)), "solo");
+        assert_eq!(count_tag(0, Some(1)), "1girl");
         assert_eq!(count_tag(1, Some(1)), "2girls");
         assert_eq!(count_tag(1, Some(0)), "2boys");
         assert_eq!(count_tag(2, None), "3people");
@@ -5088,7 +5295,7 @@ mod tests {
         a.age = Some(1);
         a.count = Some(0);
         let (body, _) = a.collect();
-        assert!(body.starts_with("solo, female, young adult"), "{body}");
+        assert!(body.starts_with("1girl, young adult"), "{body}");
         // 保存データにも人数が残る
         let mut b = App::blank();
         b.load_json(&a.to_json());
@@ -5137,8 +5344,8 @@ mod tests {
         );
         a.model = 0;
         assert!(
-            t.contains("- 人数: 1人 (solo)")
-                && t.contains("- 性別: 女性 (female)")
+            t.contains("- 人数: 1人 (1girl)")
+                && t.contains("- 性別: 女性 (1girl)")
                 && t.contains("- 輪郭・鼻: 丸顔"),
             "{t}"
         );
@@ -5170,15 +5377,24 @@ mod tests {
         a.sections[0].fields[1].state.tokens = vec![Tok { ja: "ふっくらした唇".into(), en: "full lips".into() }];
         a.sections[1].fields[0].state.tokens = vec![Tok { ja: "丸顔".into(), en: "Round face".into() }];
         a.negatives = vec!["blurry".into()];
+        a.copy_mode = 3;
+        let j = a.context_text();
+        assert!(j.contains("- 性別: 女性
+") && j.contains("- 年齢: 20代") && j.contains("丸顔") && j.contains("ふっくらした唇"), "{j}");
+        assert!(!j.contains("round face") && !j.contains("female") && !j.contains("1girl"), "{j}");
+        a.copy_mode = 4;
+        let w4 = a.context_text();
+        assert_eq!(w4, "1人, 女性, 20代, 丸顔, ふっくらした唇
+ネガティブ: ぼやけた", "{w4}");
         a.copy_mode = 1;
         let t = a.context_text();
         assert!(t.contains("# Selection (target model:") && t.contains("## Character") && t.contains("## Face & Head"), "{t}");
-        assert!(t.contains("- Count: solo") && t.contains("- Gender: female") && t.contains("- Face outline & nose: round face"), "{t}");
+        assert!(t.contains("- Count: 1girl") && t.contains("- Face outline & nose: round face"), "{t}");
         assert!(t.contains("## Negative") && t.is_ascii(), "{t}");
         // 英単語のみ: 分類なし。重複 (大文字小文字違い) は1つ。ネガティブは別の行
         a.copy_mode = 2;
         let w = a.context_text();
-        assert_eq!(w, format!("solo, female, {}, round face, full lips
+        assert_eq!(w, format!("1girl, {}, round face, full lips
 Negative prompt: blurry", AGE_TAGS[1]), "{w}");
         a.negatives.clear();
         assert!(!a.context_text().contains("Negative"));
@@ -5260,7 +5476,7 @@ Negative prompt: blurry", AGE_TAGS[1]), "{w}");
     #[test]
     fn no_background_never_stays_japanese() {
         for model in ["Midjourney", "Pony", "DALL·E"] {
-            for copy_mode in 0..COPY_MODES.len() {
+            for copy_mode in 0..3 {
                 let mut a = App::blank();
                 a.api.enabled = false;
                 a.model = FORMATS.iter().position(|f| f.name == model).unwrap();
@@ -5289,11 +5505,25 @@ Negative prompt: blurry", AGE_TAGS[1]), "{w}");
                 let t = a.copy_text();
                 let head = format!("貴方は、プロンプトエンジニアです。
 以下の内容を英語の「{model}」用のプロンプトにしてください
+プロンプトは70トークン前後でチャンク(区切り)してください
 
 ");
                 assert!(t.starts_with(&head) && t.len() > head.len(), "{t}");
+                a.instruction = 1;
+                let nat = a.copy_text();
+                assert!(nat.contains("自然文") && !nat.lines().take(2).any(|l| l.contains(model)) && nat.ends_with(&a.context_text()), "{nat}");
+                a.instruction = 2;
+                let bare = a.copy_text();
+                a.instruction = 0;
+                assert!(!bare.is_empty() && !bare.contains("プロンプトエンジニア") && t.ends_with(&bare), "{bare}");
             }
         }
+        // 「自然文」モデルは、指示文の種類に関係なくモデル名を付けない
+        a.model = FORMATS.iter().position(|f| f.name == "自然文").unwrap();
+        a.instruction = 0;
+        assert!(a.copy_text().starts_with("貴方は、プロンプトエンジニアです。
+以下の内容を英語の自然な文章 (自然文)のプロンプトにしてください
+"));
         assert_eq!(App { gender: None, ..App::blank() }.copy_text(), "");
     }
 
@@ -5306,6 +5536,74 @@ Negative prompt: blurry", AGE_TAGS[1]), "{w}");
     }
 
     #[test]
+    fn model_standard_negatives_are_selected_and_swapped_on_model_change() {
+        let idx = |n: &str| FORMATS.iter().position(|f| f.name == n).unwrap();
+        // 標準ネガティブの語は、すべてネガティブ辞書にある (日本語で選べる)
+        let cat = dict::category("negative_prompt").unwrap();
+        for i in 0..FORMATS.len() {
+            for n in preset_negatives(i) {
+                assert!(cat.entries.iter().any(|(en, _)| en.eq_ignore_ascii_case(&n)), "{}: {n}", FORMATS[i].name);
+            }
+        }
+        let mut a = App::blank();
+        a.model = idx("Pony");
+        a.last_model = idx("Midjourney");
+        a.negatives = vec!["my own".into()];
+        a.apply_model_negatives();
+        assert_eq!(a.negatives, ["my own", "score_6", "score_5", "score_4", "text", "watermark", "signature"]);
+        // 別のモデルに替えると、前のモデルの標準は外れ、自分で足した語は残る
+        a.model = idx("Illustrious");
+        a.apply_model_negatives();
+        assert_eq!(a.negatives[0], "my own");
+        assert!(a.negatives.contains(&"worst quality".to_string()) && !a.negatives.contains(&"score_6".to_string()));
+        // 標準が無いモデルでは何も足さない
+        a.model = idx("DALL·E");
+        a.apply_model_negatives();
+        assert_eq!(a.negatives, ["my own"]);
+        // 外した標準ネガティブは、出力にも出ない
+        a.model = idx("Pony");
+        a.apply_model_negatives();
+        a.negatives.retain(|n| n != "text");
+        let (_, neg) = a.collect();
+        assert!(!neg.split(", ").any(|n| n == "text") && neg.contains("watermark"), "{neg}");
+    }
+
+    #[test]
+    fn copy_orders_terms_for_the_model_and_adds_required_tags() {
+        let idx = |n: &str| FORMATS.iter().position(|f| f.name == n).unwrap();
+        let mut a = App::blank();
+        a.gender = Some(1);
+        a.count = Some(0);
+        // 画風(最初の大分類)の語・顔の語・背景の語を選ぶ
+        a.sections[6].fields[0].state.tokens = vec![Tok { ja: "アニメ風".into(), en: "anime style".into() }];
+        a.sections[0].fields[0].state.tokens = vec![Tok { ja: "丸顔".into(), en: "round face".into() }];
+        a.sections[5].fields[0].state.tokens = vec![Tok { ja: "白背景".into(), en: "white background".into() }];
+        a.copy_mode = 2;
+        // Pony: 必須タグ(score_*, source_*)が選ばれていなくても先頭に入り、画風は最後
+        a.model = idx("Pony");
+        let t = a.words_text();
+        assert!(t.starts_with("score_9, score_8_up, score_7_up, score_6_up, source_anime, 1girl, "), "{t}");
+        assert!(t.find("round face") < t.find("white background") && t.find("white background") < t.find("anime style"), "{t}");
+        // 分類つきでも、必須タグの欄が先頭
+        a.copy_mode = 1;
+        assert!(a.context_text().contains("## Required tags
+- score_9"), "{}", a.context_text());
+        // 品質タグを外すと、必須タグは入れない
+        a.quality_tags = false;
+        assert!(!a.words_text().contains("score_9"));
+        a.quality_tags = true;
+        // 本文で選んだ品質語 (masterpiece) は先頭の品質の並びに寄る
+        a.model = idx("Illustrious");
+        a.sections[6].fields[0].state.tokens.push(Tok { ja: "マスターピース".into(), en: "masterpiece".into() });
+        a.copy_mode = 2;
+        let t = a.words_text();
+        assert!(t.starts_with("masterpiece, best quality, amazing quality, highres, 1girl"), "{t}");
+        // Midjourney は必須タグなし
+        a.model = idx("Midjourney");
+        assert!(a.required_terms().is_empty());
+    }
+
+    #[test]
     fn pony_positive_starts_with_score_tags() {
         let pony = FORMATS.iter().find(|f| f.name == "Pony").unwrap();
         let out = compose_positive(pony.prefix, "1girl, long_hair, score_9, source_anime, smile");
@@ -5313,7 +5611,7 @@ Negative prompt: blurry", AGE_TAGS[1]), "{w}");
         let mut a = App::blank();
         a.model = FORMATS.iter().position(|f| f.name == "Pony").unwrap();
         a.quality_tags = true;
-        a.finish("1girl, long_hair".into(), "bad_hands".into());
+        a.finish("1girl, long_hair".into(), "bad_hands, score_6, score_5, score_4".into());
         assert!(a.output.starts_with("score_9, score_8_up"), "{}", a.output);
         assert!(a.output_neg.starts_with("score_6, score_5, score_4"), "{}", a.output_neg);
     }

@@ -1,4 +1,4 @@
-# Prompt Generator (0.9.0 β)
+# Prompt Generator (0.9.1 β)
 
 日本語で選んだ項目から、画像生成用の英語プロンプトを作る Windows 向けデスクトップアプリです (Rust / egui)。
 

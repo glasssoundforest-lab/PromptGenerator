@@ -1332,6 +1332,8 @@ struct App {
     copy_mode: usize,
     /// コピーするとき先頭に付ける依頼文 (プロンプトエンジニアへの指示) の種類 (INSTRUCTIONS の番号)
     instruction: usize,
+    /// 内容のコピーにネガティブを含めるか (画面のコピーボタンは、ネガティブを別のボタンに分けるため含めない)
+    copy_negative: bool,
     /// スクロール量 [左ペイン, 右ペイン]。settings.ini に保存する
     scroll: [f32; 2],
     /// 起動直後に1度だけ、保存したスクロール量を戻す
@@ -1450,6 +1452,7 @@ impl App {
             simple_mode: false,
             copy_mode: 0,
             instruction: 0,
+            copy_negative: true,
             scroll: [0.0; 2],
             scroll_restore: [true; 2],
             api: ApiSettings::default(),
@@ -1564,6 +1567,35 @@ impl App {
         (keep, moved)
     }
 
+    /// ネガティブだけをカンマ区切りにした文 (コピー形式が日本語なら日本語)。無ければ空
+    fn negative_text(&self) -> String {
+        let negatives = self.collect().1;
+        if self.copy_mode < 3 {
+            return negatives;
+        }
+        let ja = dict::category("negative_prompt");
+        negatives
+            .split(", ")
+            .filter(|n| !n.is_empty())
+            .map(|n| match ja.and_then(|c| c.entries.iter().find(|(en, _)| en.eq_ignore_ascii_case(n))) {
+                Some((_, ja)) => ja.to_string(),
+                None => n.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// ネガティブだけをクリップボードへコピーする
+    fn copy_negatives(&mut self, ctx: &egui::Context) {
+        let text = self.negative_text();
+        if text.is_empty() {
+            self.api_status = "コピーできるネガティブがありません".into();
+        } else {
+            ctx.copy_text(text);
+            self.api_status = "ネガティブをクリップボードにコピーしました".into();
+        }
+    }
+
     /// クリップボードへ渡す文。先頭に、選んでいるモデル向けの依頼文を付ける (内容が空なら空)
     fn copy_text(&self) -> String {
         let body = self.context_text();
@@ -1640,7 +1672,7 @@ impl App {
         if FORMATS[self.model].kind == Kind::Webui {
             positive = compose_positive(&self.required_terms().join(", "), &positive);
         }
-        let negatives = merge_unique(self.negatives.iter().cloned().chain(moved));
+        let negatives = if self.copy_negative { merge_unique(self.negatives.iter().cloned().chain(moved)) } else { Vec::new() };
         match (positive.is_empty(), negatives.is_empty()) {
             (_, true) => positive,
             (true, false) => format!("Negative prompt: {}", negatives.join(", ")),
@@ -1666,6 +1698,7 @@ Negative prompt: {}", negatives.join(", ")),
         let negatives: Vec<String> = self
             .negatives
             .iter()
+            .filter(|_| self.copy_negative)
             .map(|n| match dict::category("negative_prompt").and_then(|c| c.entries.iter().find(|(en, _)| en.eq_ignore_ascii_case(n))) {
                 Some((_, ja)) => ja.to_string(),
                 None => n.clone(),
@@ -1723,7 +1756,7 @@ Negative prompt: {}", negatives.join(", ")),
             lines.extend(rows.into_iter().map(|r| format!("- {r}")));
             lines.push(String::new());
         }
-        if !self.negatives.is_empty() {
+        if self.copy_negative && !self.negatives.is_empty() {
             lines.push("## Negative".into());
             lines.push(format!("- {}", self.negatives.join(", ")));
             lines.push(String::new());
@@ -1796,7 +1829,7 @@ Negative prompt: {}", negatives.join(", ")),
             lines.extend(rows.into_iter().map(|r| format!("- {r}")));
             lines.push(String::new());
         }
-        if !self.negatives.is_empty() {
+        if self.copy_negative && !self.negatives.is_empty() {
             lines.push("## ネガティブ".into());
             let neg: Vec<String> = self
                 .negatives
@@ -3819,7 +3852,7 @@ impl App {
             });
             ui.add_space(2.0);
             ui.horizontal(|ui| {
-                let w = (ui.available_width() - 32.0) / 5.0;
+                let w = (ui.available_width() - 40.0) / 6.0;
                 if ui.add(egui::Button::new("⟲ 設定をリセット").min_size(egui::vec2(w, 40.0))).clicked() {
                     self.reset();
                 }
@@ -3829,14 +3862,19 @@ impl App {
                 if ui.add(egui::Button::new("💾 設定を保存").min_size(egui::vec2(w, 40.0))).clicked() {
                     self.save_dialog = Some(String::new());
                 }
-                if ui.add(egui::Button::new("選択内容をコピー").min_size(egui::vec2(w, 40.0))).on_hover_text("選択・入力した内容を、上の「コピー形式」でクリップボードへコピーします").clicked() {
+                if ui.add(egui::Button::new("選択内容をコピー").min_size(egui::vec2(w, 40.0))).on_hover_text("選択・入力した内容 (ネガティブは除く) を、上の「コピー形式」でクリップボードへコピーします").clicked() {
+                    let with_negative = std::mem::replace(&mut self.copy_negative, false);
                     let text = self.copy_text();
+                    self.copy_negative = with_negative;
                     if text.is_empty() {
                         self.api_status = "コピーできる選択内容がありません".into();
                     } else {
                         ui.ctx().copy_text(text);
                         self.api_status = "選択内容をクリップボードにコピーしました".into();
                     }
+                }
+                if ui.add(egui::Button::new("ネガティブをコピー").min_size(egui::vec2(w, 40.0))).on_hover_text("ネガティブプロンプトだけを、カンマ区切りでクリップボードへコピーします (日本語のコピー形式なら日本語)").clicked() {
+                    self.copy_negatives(ui.ctx());
                 }
                 if ui.add(egui::Button::new(RichText::new("プロンプトを生成").strong()).fill(ACCENT).min_size(egui::vec2(w, 40.0))).clicked() {
                     self.generate(&ui.ctx().clone());
@@ -4093,7 +4131,16 @@ impl App {
             });
 
             card(ui, |ui| {
-                heading(ui, "ネガティブプロンプト (任意)", false, "生成したくない要素を指定できます。");
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("ネガティブプロンプト (任意)").strong().size(15.0));
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("⧉ ネガティブプロンプトをコピー").on_hover_text("選んだネガティブだけを、カンマ区切りでコピーします (日本語のコピー形式なら日本語)").clicked() {
+                            self.copy_negatives(ui.ctx());
+                        }
+                    });
+                });
+                ui.label(RichText::new("生成したくない要素を指定できます。").small().color(SUB));
+                ui.add_space(4.0);
                 ui.add_sized(
                     [ui.available_width(), 60.0],
                     egui::TextEdit::multiline(&mut self.negative_input).hint_text("例：ぼやけた、低品質、文字、ロゴ、余分な指、変形、異常な体 など"),
@@ -5358,6 +5405,31 @@ mod tests {
             .context_text(),
             ""
         );
+    }
+
+    #[test]
+    fn negative_text_is_only_the_negatives() {
+        let mut a = App { gender: None, ..App::blank() };
+        a.other = "cat".into();
+        assert_eq!(a.negative_text(), "");
+        a.negatives = vec!["blurry".into(), "text".into()];
+        a.copy_mode = 1;
+        assert_eq!(a.negative_text(), "blurry, text");
+        a.copy_mode = 3;
+        assert!(a.negative_text().contains("ぼやけた") && !a.negative_text().contains("cat"));
+    }
+
+    #[test]
+    fn copy_without_negatives_omits_them_in_every_mode() {
+        let mut a = App { gender: None, ..App::blank() };
+        a.other = "cat".into();
+        a.negatives = vec!["blurry".into()];
+        a.copy_negative = false;
+        for mode in 0..COPY_MODES.len() {
+            a.copy_mode = mode;
+            let t = a.context_text();
+            assert!(!t.contains("blurry") && !t.contains("ぼやけた") && !t.contains("ネガティブ") && !t.contains("Negative"), "{mode}: {t}");
+        }
     }
 
     #[test]

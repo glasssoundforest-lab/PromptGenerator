@@ -975,6 +975,7 @@ fn en_label(ja: &str) -> &str {
         "レースクイーン" => "Race queen",
         "競泳水着" => "Competitive swimwear",
         "チャイナ服" => "Chinese clothing",
+        "コーデ集(衣装ギャラリー)" => "Outfit sets (costume gallery)",
         "下着・ランジェリー" => "Underwear & lingerie",
         "部屋着・寝間着" => "Loungewear & sleepwear",
         "手袋・腕まわり" => "Gloves & arm wear",
@@ -1057,7 +1058,7 @@ fn build_all_sections() -> Vec<Section> {
         Section {
             title: "衣装・服装",
             sub: "服の種類、素材、装飾を指定できます。",
-            groups: &[("服装の種類", 10), ("素材", 1), ("小物", 2), ("成人向け", 1)],
+            groups: &[("服装の種類", 11), ("素材", 1), ("小物", 2), ("成人向け", 1)],
             fields: vec![
                 f("制服・ドレス・水着", "例：制服、ウェディングドレス、競泳水着、セーラー服 など", &["school uniform"]).dict(&["outfit", "cloth_costume", "cloth_school", "cloth_story", "cloth_dress", "cloth_wafuku", "cloth_swim"]),
                 f("トップス・ボトムス", "例：パーカー、パンツ、革ジャン、ジーンズ など", &["hoodie"]).dict(&["tops_bottoms", "cloth_tops", "cloth_tops_detail", "cloth_bottoms", "cloth_skirt", "waist_clothes"]),
@@ -1069,6 +1070,7 @@ fn build_all_sections() -> Vec<Section> {
                 f("レースクイーン", "例：レースクイーン、ハイレグレオタード、パラソル、スポンサーロゴ など", &["race queen"]).dict(&["race_queen"]),
                 f("競泳水着", "例：競泳水着、Xバック、水泳帽、ゴーグル、スタート台 など", &["racing swimsuit"]).dict(&["competitive_swimwear"]),
                 f("チャイナ服", "例：チャイナドレス、深いスリット、チャイナカラー、龍の刺繍 など", &["china dress"]).dict(&["china_clothes"]),
+                f("コーデ集(衣装ギャラリー)", "季節・ランジェリー・パーティ・水着・セクシー別の、服をまとめた組み合わせ例から選べます", &["knit dress"]).dict(&["costume_gallery"]),
                 f("素材・質感", "例：シルク、詳細な布の折り目、メタリックな、コットン など", &["silk"]).dict(&["cloth_material", "cloth_material_general", "cloth_physical_state", "cloth_luster_finish"]),
                 f("手袋・腕まわり", "例：白い手袋、ロンググローブ、アームウォーマー、ミトン など", &["white gloves"]).dict(&["gloves_arms"]),
                 f("アクセサリー・バッグ・小物", "例：ネックレス、ランドセル、チョーカー、ベーシックデイパック など", &["necklace"]).dict(&["accessories", "accessory", "makeup", "bag", "keychain"]),

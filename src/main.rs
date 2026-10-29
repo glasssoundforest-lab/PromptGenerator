@@ -972,6 +972,9 @@ fn en_label(ja: &str) -> &str {
         "トップス・ボトムス" => "Tops & bottoms",
         "靴下" => "Socks",
         "ネイル" => "Nails",
+        "レースクイーン" => "Race queen",
+        "競泳水着" => "Competitive swimwear",
+        "チャイナ服" => "Chinese clothing",
         "下着・ランジェリー" => "Underwear & lingerie",
         "部屋着・寝間着" => "Loungewear & sleepwear",
         "手袋・腕まわり" => "Gloves & arm wear",
@@ -1054,7 +1057,7 @@ fn build_all_sections() -> Vec<Section> {
         Section {
             title: "衣装・服装",
             sub: "服の種類、素材、装飾を指定できます。",
-            groups: &[("服装の種類", 7), ("素材", 1), ("小物", 2), ("成人向け", 1)],
+            groups: &[("服装の種類", 10), ("素材", 1), ("小物", 2), ("成人向け", 1)],
             fields: vec![
                 f("制服・ドレス・水着", "例：制服、ウェディングドレス、競泳水着、セーラー服 など", &["school uniform"]).dict(&["outfit", "cloth_costume", "cloth_school", "cloth_story", "cloth_dress", "cloth_wafuku", "cloth_swim"]),
                 f("トップス・ボトムス", "例：パーカー、パンツ、革ジャン、ジーンズ など", &["hoodie"]).dict(&["tops_bottoms", "cloth_tops", "cloth_tops_detail", "cloth_bottoms", "cloth_skirt", "waist_clothes"]),
@@ -1063,6 +1066,9 @@ fn build_all_sections() -> Vec<Section> {
                 f("下着・ランジェリー", "例：ブラ、ショーツ、キャミソール、ペチコート など", &["lingerie"]).dict(&["underwear"]),
                 f("部屋着・寝間着", "例：パジャマ、バスローブ、ナイトガウン、スウェット上下 など", &["pajamas"]).dict(&["loungewear"]),
                 f("ファッション系統", "例：カジュアル、シンプル、ミニマル、ナチュラル など", &["casual"]).dict(&["fashion_style"]),
+                f("レースクイーン", "例：レースクイーン、ハイレグレオタード、パラソル、スポンサーロゴ など", &["race queen"]).dict(&["race_queen"]),
+                f("競泳水着", "例：競泳水着、Xバック、水泳帽、ゴーグル、スタート台 など", &["racing swimsuit"]).dict(&["competitive_swimwear"]),
+                f("チャイナ服", "例：チャイナドレス、深いスリット、チャイナカラー、龍の刺繍 など", &["china dress"]).dict(&["china_clothes"]),
                 f("素材・質感", "例：シルク、詳細な布の折り目、メタリックな、コットン など", &["silk"]).dict(&["cloth_material", "cloth_material_general", "cloth_physical_state", "cloth_luster_finish"]),
                 f("手袋・腕まわり", "例：白い手袋、ロンググローブ、アームウォーマー、ミトン など", &["white gloves"]).dict(&["gloves_arms"]),
                 f("アクセサリー・バッグ・小物", "例：ネックレス、ランドセル、チョーカー、ベーシックデイパック など", &["necklace"]).dict(&["accessories", "accessory", "makeup", "bag", "keychain"]),
@@ -5405,6 +5411,32 @@ mod tests {
             .context_text(),
             ""
         );
+    }
+
+    #[test]
+    fn copy_has_no_empty_headings() {
+        for mode in [0, 1, 3] {
+            for seed in 0..40 {
+                let mut a = App::blank();
+                a.model = seed % FORMATS.len();
+                a.copy_mode = mode;
+                for _ in 0..seed % 7 {
+                    a.randomize_all();
+                }
+                let text = a.context_text();
+                let lines: Vec<&str> = text.lines().collect();
+                for (i, l) in lines.iter().enumerate() {
+                    if l.starts_with("## ") {
+                        assert!(lines.get(i + 1).is_some_and(|n| n.starts_with("- ")), "{mode}/{seed}: empty heading {l:?}
+{}", lines.join("
+"));
+                    }
+                    if let Some(row) = l.strip_prefix("- ") {
+                        assert!(!row.trim().is_empty() && !row.trim_end().ends_with(':'), "{mode}/{seed}: empty row {l:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
